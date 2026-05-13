@@ -433,35 +433,38 @@ it(
         unlinkSync(root + ".another.yet.js");
       }
       var finished = false;
-      await Promise.race([
-        Bun.sleep(200),
-        (async () => {
+      var sawInitial: (() => void) | undefined;
+      const initial = new Promise<void>(r => (sawInitial = r));
+      const reader = (async () => {
+        var str = "";
+        for await (const line of runner.stdout) {
           if (finished) {
             return;
           }
-          var str = "";
-          for await (const line of runner.stdout) {
+
+          str += new TextDecoder().decode(line);
+          if (!/\[#!root\].*[0-9]\n/g.test(str)) continue;
+
+          for (let line of str.split("\n")) {
+            if (!line.includes("[#!root]")) continue;
             if (finished) {
               return;
             }
+            await onReload();
 
-            str += new TextDecoder().decode(line);
-            if (!/\[#!root\].*[0-9]\n/g.test(str)) continue;
-
-            for (let line of str.split("\n")) {
-              if (!line.includes("[#!root]")) continue;
-              if (finished) {
-                return;
-              }
-              await onReload();
-
-              reloadCounter++;
-              str = "";
-              expect(line).toContain(`[#!root] Reloaded: ${reloadCounter}`);
-            }
+            reloadCounter++;
+            str = "";
+            expect(line).toContain(`[#!root] Reloaded: ${reloadCounter}`);
+            sawInitial?.();
           }
-        })(),
-      ]);
+        }
+      })();
+      // Wait for the initial evaluation to land before starting the
+      // quiet-window clock — on debug/ASAN builds process startup alone
+      // can exceed 200 ms, which previously made this test assert
+      // `reloadCounter === 0` before the first line ever arrived.
+      await initial;
+      await Promise.race([Bun.sleep(200), reader]);
       finished = true;
       runner.kill(0);
       runner.unref();
